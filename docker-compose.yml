@@ -107,7 +107,8 @@ services:
         reservations:
           memory: 2G
 
-  # GitLab Container Registry
+  # GitHub Container Registry (ghcr.io) используется вместо локального registry
+  # Для локальной разработки можно использовать локальный registry
   registry:
     image: registry:2
     container_name: registry

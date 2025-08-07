@@ -21,6 +21,8 @@ go.work
 .env
 .env.local
 .env.*.local
+.env.production
+.env.staging
 
 # IDE files
 .vscode/
@@ -47,3 +49,11 @@ dist/
 
 # Docker
 .dockerignore
+
+# GitHub specific
+.github/CODEOWNERS
+.github/ISSUE_TEMPLATE/config.yml.bak
+
+# Local development
+*.local
+local/

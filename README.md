@@ -337,7 +337,6 @@ docker volume ls
 MIT License - см. файл LICENSE для деталей.
 
 ---
-
-**Автор**: DevOps Team  
+ 
 **Версия**: 1.0.0  
 **Дата**: 2024

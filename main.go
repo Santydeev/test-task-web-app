@@ -18,7 +18,7 @@ import (
 var (
 	logger *logrus.Logger
 	db     *sql.DB
-	
+
 	// Prometheus метрики
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
@@ -27,7 +27,7 @@ var (
 		},
 		[]string{"method", "endpoint", "status"},
 	)
-	
+
 	httpRequestDuration = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
@@ -57,7 +57,7 @@ func init() {
 	logger = logrus.New()
 	logger.SetFormatter(&logrus.JSONFormatter{})
 	logger.SetLevel(logrus.InfoLevel)
-	
+
 	// Настройка уровня логирования из переменной окружения
 	if level := os.Getenv("LOG_LEVEL"); level != "" {
 		switch level {
@@ -67,7 +67,7 @@ func init() {
 			logger.SetLevel(logrus.ErrorLevel)
 		}
 	}
-	
+
 	// Регистрация Prometheus метрик
 	prometheus.MustRegister(httpRequestsTotal)
 	prometheus.MustRegister(httpRequestDuration)
@@ -151,10 +151,10 @@ func setupRouter() *gin.Engine {
 	// Middleware для логирования и метрик
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
-		
+
 		// Обработка запроса
 		c.Next()
-		
+
 		// Логирование
 		logger.WithFields(logrus.Fields{
 			"status":     c.Writer.Status(),
@@ -164,14 +164,14 @@ func setupRouter() *gin.Engine {
 			"path":       c.Request.URL.Path,
 			"user_agent": c.Request.UserAgent(),
 		}).Info("HTTP Request")
-		
+
 		// Обновление метрик
 		httpRequestsTotal.WithLabelValues(
 			c.Request.Method,
 			c.Request.URL.Path,
 			fmt.Sprintf("%d", c.Writer.Status()),
 		).Inc()
-		
+
 		httpRequestDuration.WithLabelValues(
 			c.Request.Method,
 			c.Request.URL.Path,
@@ -199,7 +199,7 @@ func setupRouter() *gin.Engine {
 	{
 		// Получить список пользователей
 		api.GET("/users", getUsers)
-		
+
 		// Создать пользователя
 		api.POST("/users", createUser)
 	}

@@ -7,42 +7,45 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+    printf "${GREEN}[INFO]${NC} %s\n" "$1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    printf "${YELLOW}[WARN]${NC} %s\n" "$1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    printf "${RED}[ERROR]${NC} %s\n" "$1"
 }
 
-# Проверка наличия git
+# Проверка среды выполнения
 check_git() {
-    if ! command -v git &> /dev/null; then
-        log_error "Git не установлен"
-        exit 1
+    if ! command -v git > /dev/null 2>&1; then
+        log_warn "Git не доступен в WebContainer среде"
+        log_info "Используем альтернативные методы для настройки проекта"
+        return 1
     fi
+    return 0
 }
 
 # Настройка GitLab репозитория
 setup_gitlab() {
     log_info "Настройка GitLab репозитория..."
     
-    # Проверка, что мы в git репозитории
-    if [ ! -d ".git" ]; then
-        log_error "Не найден .git каталог. Запустите скрипт из корня репозитория."
-        exit 1
+    # В WebContainer среде создаем инструкции вместо прямых git команд
+    if ! check_git; then
+        log_info "Создание инструкций для ручной настройки GitLab..."
+        create_gitlab_instructions
+        return 0
     fi
     
     # Добавление GitLab remote
     GITLAB_URL="https://gitlab.com/test-task-mitsina/test-task-web-app.git"
     
-    if git remote get-url gitlab 2>/dev/null; then
+    if git remote get-url gitlab > /dev/null 2>&1; then
         log_info "GitLab remote уже настроен"
         git remote set-url gitlab $GITLAB_URL
     else
@@ -55,12 +58,13 @@ setup_gitlab() {
 setup_branches() {
     log_info "Настройка веток для GitLab..."
     
-    # Создание develop ветки
-    if ! git show-ref --verify --quiet refs/heads/develop; then
+    if ! check_git; then
+        return 0
+    fi
+    
+    if ! git show-ref --verify --quiet refs/heads/develop > /dev/null 2>&1; then
         git checkout -b develop
         log_info "Создана ветка develop"
-    else
-        log_info "Ветка develop уже существует"
     fi
     
     # Возврат на main
@@ -71,11 +75,10 @@ setup_branches() {
 check_gitlab_ci() {
     log_info "Проверка GitLab CI конфигурации..."
     
-    if [ -f ".gitlab-ci.yml" ]; then
+    if test -f ".gitlab-ci.yml"; then
         log_info "GitLab CI конфигурация найдена"
         
-        # Проверка синтаксиса (если доступен gitlab-ci-multi-runner)
-        if command -v gitlab-ci-multi-runner &> /dev/null; then
+        if command -v gitlab-ci-multi-runner > /dev/null 2>&1; then
             gitlab-ci-multi-runner verify
             log_info "GitLab CI конфигурация валидна"
         else
@@ -91,7 +94,7 @@ check_gitlab_ci() {
 setup_gitlab_env() {
     log_info "Настройка переменных окружения для GitLab..."
     
-    if [ ! -f ".env.gitlab" ]; then
+    if ! test -f ".env.gitlab"; then
         cat > .env.gitlab << EOF
 # GitLab CI/CD Variables
 # Добавьте эти переменные в Settings > CI/CD > Variables
@@ -120,14 +123,52 @@ EOF
     fi
 }
 
-# Push в GitLab
+# Создание инструкций для ручной настройки
+create_gitlab_instructions() {
+    cat > GITLAB_SETUP_INSTRUCTIONS.md << 'EOF'
+# Инструкции по настройке GitLab репозитория
+
+## 1. Клонирование и настройка локального репозитория
+
+```bash
+# Клонируйте репозиторий локально
+git clone https://github.com/your-username/your-repo.git
+cd your-repo
+
+# Добавьте GitLab remote
+git remote add gitlab https://gitlab.com/test-task-mitsina/test-task-web-app.git
+
+# Создайте develop ветку
+git checkout -b develop
+git checkout main
+```
+
+## 2. Отправка кода в GitLab
+
+```bash
+# Отправьте код в GitLab
+git push gitlab main
+git push gitlab develop
+```
+
+## 3. Настройка CI/CD переменных в GitLab
+
+Перейдите в Settings > CI/CD > Variables и добавьте переменные из файла .env.gitlab
+
+EOF
+    log_info "Создан файл GITLAB_SETUP_INSTRUCTIONS.md с инструкциями"
+}
+
+# Альтернативный метод для WebContainer
 push_to_gitlab() {
-    log_info "Отправка кода в GitLab..."
+    if ! check_git; then
+        log_info "В WebContainer среде используйте созданные инструкции"
+        return 0
+    fi
     
-    # Добавление всех файлов
+    log_info "Отправка кода в GitLab..."
     git add .
     
-    # Проверка на изменения
     if git diff --staged --quiet; then
         log_info "Нет изменений для коммита"
     else
@@ -135,12 +176,10 @@ push_to_gitlab() {
         log_info "Создан коммит с GitLab конфигурацией"
     fi
     
-    # Push в GitLab
     log_info "Отправка в GitLab репозиторий..."
     git push gitlab main
     
-    # Push develop ветки
-    if git show-ref --verify --quiet refs/heads/develop; then
+    if git show-ref --verify --quiet refs/heads/develop > /dev/null 2>&1; then
         git push gitlab develop
         log_info "Отправлена ветка develop"
     fi
@@ -190,7 +229,11 @@ show_gitlab_instructions() {
 main() {
     log_info "Начало настройки GitLab репозитория..."
     
-    check_git
+    if ! check_git; then
+        log_warn "Работаем в WebContainer среде без Git"
+        log_info "Создаем конфигурационные файлы и инструкции..."
+    fi
+    
     setup_gitlab
     setup_branches
     check_gitlab_ci
@@ -202,7 +245,7 @@ main() {
 }
 
 # Обработка аргументов
-case "${1:-setup}" in
+case "${1-setup}" in
     "setup")
         main
         ;;

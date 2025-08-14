@@ -1,0 +1,240 @@
+# GitLab CI/CD Pipeline для веб-приложения на Go
+stages:
+  - validate
+  - test
+  - build
+  - security
+  - deploy-staging
+  - deploy-production
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  GO_VERSION: "1.21"
+  REGISTRY_URL: $CI_REGISTRY
+  IMAGE_NAME: $CI_REGISTRY_IMAGE
+  POSTGRES_DB: test_db
+  POSTGRES_USER: test_user
+  POSTGRES_PASSWORD: test_password
+
+# Кэширование для ускорения сборки
+cache:
+  paths:
+    - .cache/go-build/
+    - .cache/go-mod/
+
+# Валидация кода
+validate:
+  stage: validate
+  image: golang:${GO_VERSION}-alpine
+  before_script:
+    - apk add --no-cache git
+    - export GOCACHE=$PWD/.cache/go-build
+    - export GOMODCACHE=$PWD/.cache/go-mod
+  script:
+    - echo "Validating Go code..."
+    - go vet ./...
+    - go fmt -d .
+    - go mod tidy
+    - go mod verify
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Тестирование
+test:
+  stage: test
+  image: golang:${GO_VERSION}-alpine
+  services:
+    - name: postgres:15-alpine
+      alias: postgres
+      variables:
+        POSTGRES_DB: $POSTGRES_DB
+        POSTGRES_USER: $POSTGRES_USER
+        POSTGRES_PASSWORD: $POSTGRES_PASSWORD
+  variables:
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_USER: $POSTGRES_USER
+    DB_PASSWORD: $POSTGRES_PASSWORD
+    DB_NAME: $POSTGRES_DB
+  before_script:
+    - apk add --no-cache git
+    - export GOCACHE=$PWD/.cache/go-build
+    - export GOMODCACHE=$PWD/.cache/go-mod
+  script:
+    - echo "Running tests..."
+    - go test -v -race -coverprofile=coverage.out ./...
+    - go tool cover -html=coverage.out -o coverage.html
+    - go tool cover -func=coverage.out
+  coverage: '/coverage: \d+\.\d+% of statements/'
+  artifacts:
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+    paths:
+      - coverage.html
+      - coverage.out
+    expire_in: 1 week
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Сборка Docker образа
+build:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  script:
+    - echo "Building Docker image..."
+    - docker build -t $IMAGE_NAME:$CI_COMMIT_SHA .
+    - docker build -t $IMAGE_NAME:latest .
+    - docker push $IMAGE_NAME:$CI_COMMIT_SHA
+    - docker push $IMAGE_NAME:latest
+    - |
+      if [ "$CI_COMMIT_REF_NAME" = "main" ]; then
+        docker tag $IMAGE_NAME:$CI_COMMIT_SHA $IMAGE_NAME:stable
+        docker push $IMAGE_NAME:stable
+      fi
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Сканирование безопасности
+security:
+  stage: security
+  image: aquasec/trivy:latest
+  script:
+    - echo "Running security scan..."
+    - trivy image --format template --template "@contrib/sarif.tpl" -o trivy-results.sarif $IMAGE_NAME:$CI_COMMIT_SHA
+    - trivy image --exit-code 0 --severity HIGH,CRITICAL $IMAGE_NAME:$CI_COMMIT_SHA
+  artifacts:
+    reports:
+      sast: trivy-results.sarif
+    paths:
+      - trivy-results.sarif
+    expire_in: 1 week
+  dependencies:
+    - build
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# SAST сканирование кода
+sast:
+  stage: security
+  image: golang:${GO_VERSION}-alpine
+  before_script:
+    - apk add --no-cache git
+    - go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+  script:
+    - gosec -fmt sarif -out gosec-report.sarif ./...
+  artifacts:
+    reports:
+      sast: gosec-report.sarif
+    paths:
+      - gosec-report.sarif
+    expire_in: 1 week
+  allow_failure: true
+  only:
+    - main
+    - develop
+    - merge_requests
+
+# Развертывание в staging
+deploy-staging:
+  stage: deploy-staging
+  image: alpine:latest
+  environment:
+    name: staging
+    url: http://staging.example.com
+  before_script:
+    - apk add --no-cache openssh-client curl
+    - eval $(ssh-agent -s)
+    - echo "$STAGING_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H $STAGING_HOST >> ~/.ssh/known_hosts
+  script:
+    - echo "Deploying to staging..."
+    - |
+      ssh $STAGING_USER@$STAGING_HOST << EOF
+        docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+        docker pull $IMAGE_NAME:$CI_COMMIT_SHA
+        docker stop webapp || true
+        docker rm webapp || true
+        docker run -d --name webapp \
+          --restart unless-stopped \
+          -p 8080:8080 \
+          -e DB_HOST=$STAGING_DB_HOST \
+          -e DB_PASSWORD=$STAGING_DB_PASSWORD \
+          $IMAGE_NAME:$CI_COMMIT_SHA
+      EOF
+    - sleep 30
+    - curl -f http://staging.example.com/health || exit 1
+  dependencies:
+    - build
+    - security
+  only:
+    - main
+  when: manual
+
+# Развертывание в production
+deploy-production:
+  stage: deploy-production
+  image: alpine:latest
+  environment:
+    name: production
+    url: http://production.example.com
+  before_script:
+    - apk add --no-cache openssh-client curl
+    - eval $(ssh-agent -s)
+    - echo "$PRODUCTION_SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - ssh-keyscan -H $PRODUCTION_HOST >> ~/.ssh/known_hosts
+  script:
+    - echo "Deploying to production..."
+    - |
+      ssh $PRODUCTION_USER@$PRODUCTION_HOST << EOF
+        docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+        docker pull $IMAGE_NAME:stable
+        docker stop webapp || true
+        docker rm webapp || true
+        docker run -d --name webapp \
+          --restart unless-stopped \
+          -p 8080:8080 \
+          -e DB_HOST=$PRODUCTION_DB_HOST \
+          -e DB_PASSWORD=$PRODUCTION_DB_PASSWORD \
+          $IMAGE_NAME:stable
+      EOF
+    - sleep 30
+    - curl -f http://production.example.com/health || exit 1
+  dependencies:
+    - build
+    - security
+  only:
+    - main
+  when: manual
+  allow_failure: false
+
+# Очистка старых образов
+cleanup:
+  stage: deploy-production
+  image: alpine:latest
+  script:
+    - echo "Cleaning up old images..."
+    - |
+      # Здесь можно добавить логику очистки старых образов
+      echo "Cleanup completed"
+  when: manual
+  only:
+    - main
